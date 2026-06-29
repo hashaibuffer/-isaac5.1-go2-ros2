@@ -1,15 +1,13 @@
 import omni
 import numpy as np
 from pxr import Gf
-import omni.replicator.core as rep
-from isaacsim.sensors.camera import Camera
-import isaacsim.core.utils.numpy.rotations as rot_utils
 
 class SensorManager:
     def __init__(self, num_envs):
         self.num_envs = num_envs
 
     def add_rtx_lidar(self):
+        import omni.replicator.core as rep
         lidar_annotators = []
         for env_idx in range(self.num_envs):
             _, sensor = omni.kit.commands.execute(
@@ -29,6 +27,8 @@ class SensorManager:
         return lidar_annotators
 
     def add_camera(self, freq):
+        from isaacsim.sensors.camera import Camera
+        import isaacsim.core.utils.numpy.rotations as rot_utils
         cameras = []
         for env_idx in range(self.num_envs):
             camera = Camera(

@@ -11,7 +11,6 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.noise import UniformNoiseCfg
-from isaacsim.core.utils.viewports import set_camera_view
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import go2.go2_ctrl as go2_ctrl
@@ -176,6 +175,7 @@ class Go2RSLEnvCfg(ManagerBasedRLEnvCfg):
             self.scene.height_scanner.update_period = self.decimation * self.sim.dt
 
 def camera_follow(env):
+    from isaacsim.core.utils.viewports import set_camera_view
     if (env.unwrapped.scene.num_envs == 1):
         robot_position = env.unwrapped.scene["unitree_go2"].data.root_state_w[0, :3].cpu().numpy()
         robot_orientation = env.unwrapped.scene["unitree_go2"].data.root_state_w[0, 3:7].cpu().numpy()
