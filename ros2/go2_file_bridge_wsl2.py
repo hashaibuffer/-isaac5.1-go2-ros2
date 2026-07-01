@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-WSL2-side ROS2 publisher: reads sim data from shared files, publishes as ROS2 topics.
+WSL2-side ROS2 bridge: reads sim data from shared files, publishes as ROS2 topics
+and subscribes to cmd_vel to control the robot.
 Run: /usr/bin/python3 go2_file_bridge_wsl2.py
 """
-import json, time, os, sys, struct
+import json, time, os, sys
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from sensor_msgs.msg import Image, PointCloud2, PointField, CameraInfo
 from sensor_msgs_py import point_cloud2
 from tf2_ros import TransformBroadcaster
@@ -15,11 +16,14 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-DATA_DIR = "/mnt/d/isaacsim/data/go2_ros2"
+DATA_DIR = "/mnt/d/isaac-sim/data/go2_ros2"
+CMD_VEL_FILE = os.path.join(DATA_DIR, "cmd_vel.json")
+
 
 class Go2Bridge(Node):
     def __init__(self):
         super().__init__("go2_file_bridge")
+        # Publishers
         self.odom_pub = self.create_publisher(Odometry, "/unitree_go2/odom", 10)
         self.pose_pub = self.create_publisher(PoseStamped, "/unitree_go2/pose", 10)
         self.img_pub = self.create_publisher(Image, "/unitree_go2/front_cam/color_image", 10)
@@ -30,7 +34,37 @@ class Go2Bridge(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.bridge = CvBridge()
         self.last_frame = -1
-        self.get_logger().info("Go2 Bridge started (camera + depth + semantic + lidar)")
+        self.latest_cmd_vel = None  # store for debug
+
+        # Subscriber: cmd_vel from ROS2 (e.g. from rviz2 2D Nav Goal or teleop)
+        self.cmd_vel_sub = self.create_subscription(
+            Twist, "/unitree_go2/cmd_vel", self._cmd_vel_callback, 10
+        )
+
+        self.get_logger().info(
+            "Go2 Bridge started\n"
+            "  Publishing:  /unitree_go2/odom, /pose, /front_cam/*, /lidar/point_cloud\n"
+            "  Subscribing: /unitree_go2/cmd_vel"
+        )
+
+    def _cmd_vel_callback(self, msg: Twist):
+        """Write received cmd_vel to shared file for Windows side to read."""
+        cmd = {
+            "linear_x": msg.linear.x,
+            "linear_y": msg.linear.y,
+            "angular_z": msg.angular.z,
+            "timestamp": time.time(),
+        }
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(CMD_VEL_FILE, "w") as f:
+                json.dump(cmd, f)
+            self.latest_cmd_vel = cmd
+            self.get_logger().debug(
+                f"cmd_vel received: lin=({msg.linear.x:.2f}, {msg.linear.y:.2f}), ang={msg.angular.z:.2f}"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"Failed to write cmd_vel: {e}")
 
     def publish_data(self):
         json_path = os.path.join(DATA_DIR, "data.json")
@@ -38,9 +72,9 @@ class Go2Bridge(Node):
             return
 
         try:
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 data = json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             return
 
         frame = data.get("frame", 0)
@@ -50,8 +84,8 @@ class Go2Bridge(Node):
 
         now = self.get_clock().now().to_msg()
         odom_data = data.get("odom", {})
-        pos = odom_data.get("position", [0,0,0])
-        ori = odom_data.get("orientation", [0,0,0,1])
+        pos = odom_data.get("position", [0, 0, 0])
+        ori = odom_data.get("orientation", [0, 0, 0, 1])
 
         # --- Odometry ---
         odom = Odometry()
@@ -164,6 +198,7 @@ class Go2Bridge(Node):
                 except Exception as e:
                     self.get_logger().warn(f"Lidar error: {e}")
 
+
 def main():
     rclpy.init()
     node = Go2Bridge()
@@ -172,6 +207,7 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.05)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()

@@ -9,12 +9,31 @@ from isaaclab.terrains import TerrainGeneratorCfg
 from env.terrain_cfg import HfUniformDiscreteObstaclesTerrainCfg
 
 def add_semantic_label():
-    # Lazy import: omni.replicator.core is only available after SimulationApp starts
-    import omni.replicator.core as rep
-    ground_plane = rep.get.prims("/World/GroundPlane")
-    with ground_plane:
-    # Add a semantic label
-        rep.modify.semantics([("class", "floor")])
+    """Add semantic label to ground plane for Replicator.
+
+    Note: In Isaac Sim 5.1, the ground prim path is /World/ground
+    and Replicator's get.prims API may not be available in all configurations.
+    """
+    from pxr import UsdShade, Sdf
+    try:
+        import omni.replicator.core as rep
+        # Try Replicator API first
+        try:
+            ground_plane = rep.get.prims("/World/ground")
+            with ground_plane:
+                rep.modify.semantics([("class", "floor")])
+        except Exception:
+            # Fallback: set semantic label directly via USD
+            import isaacsim.core.utils.prims as prim_utils
+            prim = prim_utils.get_prim_at_path("/World/ground")
+            if prim:
+                from pxr import Sdf
+                # Use Sdf to set semantic label directly
+                label_attr = prim.CreateAttribute("semantic:class", Sdf.ValueTypeNames.Token)
+                label_attr.Set("floor")
+                print("[INFO] Semantic label 'floor' set via USD API")
+    except ImportError:
+        print("[INFO] Replicator not available - skipping semantic labels")
 
 def create_obstacle_sparse_env():
     add_semantic_label()
@@ -92,7 +111,7 @@ def create_obstacle_dense_env():
     )
     TerrainImporter(terrain) 
 
-LOCAL_ASSET_DIR = "D:/isaacsim/data/Assets/Isaac/Environments/Simple_Warehouse"
+LOCAL_ASSET_DIR = "D:/isaac-sim/data/Assets/Isaac/Environments/Simple_Warehouse"
 
 def _load_warehouse(asset_file: str):
     add_semantic_label()

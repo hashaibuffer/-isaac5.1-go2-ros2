@@ -2,10 +2,33 @@ import os
 import sys
 import types
 import hydra
-import torch
 import time
 import math
 import argparse
+
+# Note: 'import torch' is intentionally deferred to after AppLauncher init
+# to avoid DLL conflicts with Isaac Sim 5.1's bundled CUDA runtime.
+
+# Add Isaac Sim 5.1 paths to system path (critical: must be before any imports)
+_ISAAC_51_PATH = r"D:\isaac-sim"
+if _ISAAC_51_PATH not in sys.path:
+    sys.path.insert(0, _ISAAC_51_PATH)
+_python_path = os.path.join(_ISAAC_51_PATH, "python")
+if _python_path not in sys.path:
+    sys.path.insert(0, _python_path)
+
+# Add Isaac Lab source paths (for import isaaclab, isaaclab_rl, etc.)
+_ISAACLAB_ROOT = r"D:\isaacsim\IsaacLab"
+_source_paths = [
+    os.path.join(_ISAACLAB_ROOT, "source"),
+    os.path.join(_ISAACLAB_ROOT, "source", "isaaclab"),
+    os.path.join(_ISAACLAB_ROOT, "source", "isaaclab_rl"),
+    os.path.join(_ISAACLAB_ROOT, "source", "isaaclab_assets"),
+    os.path.join(_ISAACLAB_ROOT, "source", "isaaclab_tasks"),
+]
+for _p in _source_paths:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # Set ROS2 environment variables BEFORE any Isaac Sim imports
 os.environ["ROS_DISTRO"] = "humble"
@@ -13,12 +36,12 @@ os.environ["ROS_DOMAIN_ID"] = "42"
 os.environ["ROS_LOCALHOST_ONLY"] = "0"
 os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
 os.environ["ROS_DISCOVERY_SERVER"] = "192.168.50.205:11811"
-os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = r"D:\isaacsim\data\fastdds_discovery.xml"
-_ros2_lib = os.path.join(os.environ.get("ISAAC_PATH", "D:/isaacsim"),
+os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = r"D:\isaac-sim\data\fastdds_discovery.xml"
+_ros2_lib = os.path.join(os.environ.get("ISAAC_PATH", "D:/isaac-sim"),
                          "exts/isaacsim.ros2.bridge", "humble", "lib")
 if os.path.exists(_ros2_lib):
     os.environ["PATH"] = _ros2_lib + ";" + os.environ.get("PATH", "")
-_ros2_dll = os.path.join(os.environ.get("ISAAC_PATH", "D:/isaacsim"),
+_ros2_dll = os.path.join(os.environ.get("ISAAC_PATH", "D:/isaac-sim"),
                           "exts/isaacsim.ros2.bridge", "humble", "rclpy")
 if os.path.exists(_ros2_dll):
     os.environ["PATH"] = _ros2_dll + ";" + os.environ.get("PATH", "")
@@ -85,7 +108,7 @@ print("[INFO] h5py: Using mock module (HDF5 recording disabled)")
 # Setup ROS2 environment (must be done before starting SimApp)
 ROS2_AVAILABLE = False
 try:
-    ISAAC_PATH = os.environ.get("ISAAC_PATH", "D:/isaacsim")
+    ISAAC_PATH = os.environ.get("ISAAC_PATH", "D:/isaac-sim")
     ros2_ext = os.path.join(ISAAC_PATH, "exts/isaacsim.ros2.bridge")
     # Set up PATH for ROS2 native DLLs
     os.environ.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
@@ -110,8 +133,21 @@ parser = argparse.ArgumentParser(description="Tutorial on running the cartpole R
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
-# parse the arguments
-args_cli = parser.parse_args()
+# parse the arguments (consume known args, leave remaining for Hydra)
+args_cli, _remaining = parser.parse_known_args()
+
+# Restore sys.argv with only remaining args (excluding consumed AppLauncher args)
+sys.argv = [sys.argv[0]] + _remaining
+
+# Use custom experience file for Isaac Sim 5.1 GUI mode
+# (removes omni.physx.stageupdate which has no Python 3.11 build)
+if not getattr(args_cli, 'headless', False) and not getattr(args_cli, 'experience', None):
+    _custom_exp = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "apps", "isaaclab.python.sim51.kit"
+    )
+    if os.path.exists(_custom_exp):
+        args_cli.experience = _custom_exp
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -135,7 +171,7 @@ try:
     # Import ROS2 bridge modules using direct loader
     import sys
     import importlib.util
-    ISAAC_PATH = os.environ.get("ISAAC_PATH", "D:/isaacsim")
+    ISAAC_PATH = os.environ.get("ISAAC_PATH", "D:/isaac-sim")
     ros2_ext = os.path.join(ISAAC_PATH, "exts/isaacsim.ros2.bridge")
 
     # Set up ROS2 environment (critical: must be done before importing rclpy)
@@ -181,6 +217,8 @@ def run_simulator(cfg):
     go2_env_cfg.scene.num_envs = cfg.num_envs
     go2_env_cfg.decimation = math.ceil(1./go2_env_cfg.sim.dt/cfg.freq)
     go2_env_cfg.sim.render_interval = go2_env_cfg.decimation
+    # Set simulation device based on --device arg
+    go2_env_cfg.sim.device = getattr(args_cli, "device", "cuda:0")
     go2_ctrl.init_base_vel_cmd(cfg.num_envs)
     # env, policy = go2_ctrl.get_rsl_flat_policy(go2_env_cfg)
     env, policy = go2_ctrl.get_rsl_rough_policy(go2_env_cfg)
@@ -241,7 +279,8 @@ def run_simulator(cfg):
 
             # ROS2 data (optional)
             if ROS2_AVAILABLE and dm is not None:
-                dm.pub_ros2_data()
+                dm.check_cmd_vel()  # read cmd_vel from WSL2
+                dm.pub_ros2_data()  # publish sim data to WSL2
 
             # Camera follow
             if (cfg.camera_follow):

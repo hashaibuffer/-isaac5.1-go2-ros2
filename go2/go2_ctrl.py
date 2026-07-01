@@ -74,22 +74,48 @@ def get_rsl_flat_policy(cfg):
     env = gym.make("Isaac-Velocity-Flat-Unitree-Go2-v0", cfg=cfg)
     env = RslRlVecEnvWrapper(env)
     agent_cfg: RslRlOnPolicyRunnerCfg = unitree_go2_flat_cfg
+    device = getattr(cfg.sim, "device", agent_cfg["device"])
     ckpt_path = get_checkpoint_path(log_path=_get_ckpt_path(),
                                     run_dir=agent_cfg["load_run"],
                                     checkpoint=agent_cfg["load_checkpoint"])
-    ppo_runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=agent_cfg["device"])
-    ppo_runner.load(ckpt_path)
-    policy = ppo_runner.get_inference_policy(device=agent_cfg["device"])
+    ppo_runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=device)
+    _load_on_policy_runner(ppo_runner, ckpt_path)
+    policy = ppo_runner.get_inference_policy(device=device)
     return env, policy
+
+def _load_on_policy_runner(ppo_runner, ckpt_path):
+    """Load checkpoint with CPU mapping if CUDA is unavailable."""
+    if not torch.cuda.is_available():
+        # Monkey-patch to add map_location for CPU-only loading of CUDA checkpoints
+        import rsl_rl.runners.on_policy_runner as _opr
+        _orig_load = _opr.OnPolicyRunner.load
+        def _patched_load(self, path, load_optimizer=True):
+            loaded_dict = torch.load(path, weights_only=False, map_location="cpu")
+            resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
+            if self.alg.rnd:
+                self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
+            if load_optimizer and "optimizer_state_dict" in loaded_dict:
+                self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            # upload model to external logging service
+            if hasattr(self, 'writer') and self.writer is not None:
+                self.writer.save_model(path, self.current_learning_iteration)
+            return loaded_dict
+        _opr.OnPolicyRunner.load = _patched_load
+        ppo_runner.load(ckpt_path)
+        _opr.OnPolicyRunner.load = _orig_load  # restore
+    else:
+        ppo_runner.load(ckpt_path)
+
 
 def get_rsl_rough_policy(cfg):
     env = gym.make("Isaac-Velocity-Rough-Unitree-Go2-v0", cfg=cfg)
     env = RslRlVecEnvWrapper(env)
     agent_cfg: RslRlOnPolicyRunnerCfg = unitree_go2_rough_cfg
+    device = getattr(cfg.sim, "device", agent_cfg["device"])
     ckpt_path = get_checkpoint_path(log_path=_get_ckpt_path(),
                                     run_dir=agent_cfg["load_run"],
                                     checkpoint=agent_cfg["load_checkpoint"])
-    ppo_runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=agent_cfg["device"])
-    ppo_runner.load(ckpt_path)
-    policy = ppo_runner.get_inference_policy(device=agent_cfg["device"])
+    ppo_runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=device)
+    _load_on_policy_runner(ppo_runner, ckpt_path)
+    policy = ppo_runner.get_inference_policy(device=device)
     return env, policy
